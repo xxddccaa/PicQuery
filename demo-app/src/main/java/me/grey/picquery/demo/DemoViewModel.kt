@@ -28,8 +28,9 @@ import me.grey.picquery.sdk.search.PicQueryIndexStore
 class DemoViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application
     private val prefs = app.getSharedPreferences("picquery_demo", 0)
-    private val modelsDir = File(app.filesDir, "models/mobileclip2-s0")
-    private val externalModelsDir = File(app.getExternalFilesDir(null), "models/mobileclip2-s0")
+    private val modelsRootDir = File(app.filesDir, "models")
+    private val managedModelsDir = File(modelsRootDir, "managed")
+    private val externalModelsRootDir = File(app.getExternalFilesDir(null), "models")
     private val cacheDir = File(app.filesDir, "index")
     private val manifestFile = File(cacheDir, "gallery-index.tsv")
     private val indexFile = File(cacheDir, "gallery-index.bin")
@@ -59,7 +60,7 @@ class DemoViewModel(application: Application) : AndroidViewModel(application) {
             setStatus("Importing ${role.name.lowercase()} model...")
             try {
                 val target = withContext(Dispatchers.IO) {
-                    ModelFileStore.copyToManagedLocation(app, role, uri, modelsDir)
+                    ModelFileStore.copyToManagedLocation(app, role, uri, managedModelsDir)
                 }
                 when (role) {
                     ModelRole.IMAGE -> prefs.edit().putString(KEY_IMAGE_MODEL, target.absolutePath).apply()
@@ -192,6 +193,8 @@ class DemoViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun rebuildEngine(clearIndex: Boolean) {
         engine?.close()
         engine = null
+        val previousImagePath = uiState.imageModelPath
+        val previousTextPath = uiState.textModelPath
         val imagePath = resolveExistingModelPath(
             role = ModelRole.IMAGE,
             preferredPath = prefs.getString(KEY_IMAGE_MODEL, null)
@@ -220,14 +223,16 @@ class DemoViewModel(application: Application) : AndroidViewModel(application) {
                     app,
                     PicQueryConfig(
                         modelPaths = PicQueryModelPaths(imagePath, textPath),
-                        backendPreference = PicQueryBackendPreference.AUTO,
+                        backendPreference = PicQueryBackendPreference.GPU,
                         cpuThreads = 4
                     )
                 )
         }
-        if (clearIndex) {
+        val modelChanged = clearIndex || previousImagePath != imagePath || previousTextPath != textPath
+        if (modelChanged) {
             index = null
             imageManifest.clear()
+            deleteCachedIndexFiles()
             uiState = uiState.copy(indexedCount = 0, totalToIndex = 0, searchResults = emptyList())
         }
         uiState = uiState.copy(runtimeInfo = engine?.runtimeInfo())
@@ -247,27 +252,30 @@ class DemoViewModel(application: Application) : AndroidViewModel(application) {
     private fun resolveExistingModelPath(role: ModelRole, preferredPath: String?): String? {
         val candidates = buildList {
             preferredPath?.let(::add)
-            addAll(defaultModelCandidates(modelsDir, role))
-            addAll(defaultModelCandidates(externalModelsDir, role))
+            addAll(discoverModelCandidates(modelsRootDir, role))
+            addAll(discoverModelCandidates(externalModelsRootDir, role))
         }
         return candidates.firstOrNull { path ->
             path != null && File(path).exists()
         }
     }
 
-    private fun defaultModelCandidates(baseDir: File?, role: ModelRole): List<String> {
-        if (baseDir == null) return emptyList()
-        return when (role) {
-            ModelRole.IMAGE -> listOf(
-                File(baseDir, "mobileclip2_image.tflite").absolutePath,
-                File(baseDir, "mobileclip2_image.onnx").absolutePath,
-                File(baseDir, "mobileclip2_image.ort").absolutePath
-            )
-            ModelRole.TEXT -> listOf(
-                File(baseDir, "mobileclip2_text.ort").absolutePath,
-                File(baseDir, "mobileclip2_text.onnx").absolutePath
-            )
+    private fun discoverModelCandidates(rootDir: File?, role: ModelRole): List<String> {
+        if (rootDir == null || !rootDir.exists()) return emptyList()
+        val expectedNames = when (role) {
+            ModelRole.IMAGE -> setOf("mobileclip2_image.tflite", "mobileclip2_image.onnx", "mobileclip2_image.ort")
+            ModelRole.TEXT -> setOf("mobileclip2_text.ort", "mobileclip2_text.onnx")
         }
+        return rootDir.walkTopDown()
+            .maxDepth(3)
+            .filter { it.isFile && it.name in expectedNames }
+            .map { it.absolutePath }
+            .toList()
+    }
+
+    private fun deleteCachedIndexFiles() {
+        indexFile.delete()
+        manifestFile.delete()
     }
 
     private fun restoreState() {

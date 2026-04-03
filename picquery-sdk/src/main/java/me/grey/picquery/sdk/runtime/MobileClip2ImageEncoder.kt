@@ -2,14 +2,18 @@ package me.grey.picquery.sdk.runtime
 
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtException
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
+import ai.onnxruntime.providers.NNAPIFlags
 import android.graphics.Bitmap
+import android.util.Log
 import java.io.Closeable
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.EnumSet
 import me.grey.picquery.sdk.model.PicQueryBackendPreference
 import me.grey.picquery.sdk.model.PicQueryConfig
 import me.grey.picquery.sdk.model.PicQueryRuntimeInfo
@@ -105,21 +109,30 @@ private class TfliteMobileClip2ImageEncoder(
 private class OnnxMobileClip2ImageEncoder(
     config: PicQueryConfig
 ) : ImageEmbeddingEncoder {
+    companion object {
+        private const val TAG = "PicQueryOnnxImage"
+    }
+
     private val modelFile = File(config.modelPaths.imageModelPath)
     private val environment = OrtEnvironment.getEnvironment()
     private val session: OrtSession
     private val imageSize: Int
     private val channelFirst: Boolean
+    private val runtimeInfo: PicQueryRuntimeInfo
 
     init {
         require(modelFile.exists()) { "Image model not found: ${modelFile.absolutePath}" }
-        val options = OrtSession.SessionOptions().apply {
-            setIntraOpNumThreads(config.cpuThreads)
-            if (modelFile.extension.equals("ort", ignoreCase = true)) {
-                addConfigEntry("session.load_model_format", "ORT")
-            }
+        val nnapiRequested = config.backendPreference != PicQueryBackendPreference.CPU
+        var backend = "ONNX_CPU"
+        var gpuActive = false
+        session = if (nnapiRequested) {
+            createNnapiSession(config)?.also {
+                backend = "ONNX_NNAPI"
+                gpuActive = true
+            } ?: createCpuSession(config)
+        } else {
+            createCpuSession(config)
         }
-        session = environment.createSession(modelFile.absolutePath, options)
         val tensorInfo = session.inputInfo.entries.first().value.info as TensorInfo
         val shape = tensorInfo.shape
         imageSize = when {
@@ -128,14 +141,16 @@ private class OnnxMobileClip2ImageEncoder(
             else -> 256
         }
         channelFirst = shape.size >= 4 && shape[1] == 3L
+        runtimeInfo = PicQueryRuntimeInfo(
+            imageBackend = backend,
+            gpuRequested = nnapiRequested,
+            gpuActive = gpuActive
+        )
+        Log.i(TAG, "Image encoder backend=$backend imageSize=$imageSize model=${modelFile.name}")
     }
 
     override fun runtimeInfo(): PicQueryRuntimeInfo {
-        return PicQueryRuntimeInfo(
-            imageBackend = "ONNX_CPU",
-            gpuRequested = false,
-            gpuActive = false
-        )
+        return runtimeInfo
     }
 
     override fun encode(bitmap: Bitmap): FloatArray {
@@ -163,6 +178,53 @@ private class OnnxMobileClip2ImageEncoder(
 
     override fun close() {
         session.close()
+    }
+
+    private fun createCpuSession(config: PicQueryConfig): OrtSession {
+        val options = createSessionOptions(config)
+        return try {
+            environment.createSession(modelFile.absolutePath, options)
+        } finally {
+            options.close()
+        }
+    }
+
+    private fun createNnapiSession(config: PicQueryConfig): OrtSession? {
+        val options = createSessionOptions(config)
+        return try {
+            options.addNnapi(
+                EnumSet.of(
+                    NNAPIFlags.USE_FP16,
+                    NNAPIFlags.USE_NCHW,
+                    NNAPIFlags.CPU_DISABLED
+                )
+            )
+            environment.createSession(modelFile.absolutePath, options)
+        } catch (t: Throwable) {
+            Log.w(TAG, "NNAPI session unavailable, falling back to CPU: ${t.message}")
+            null
+        } finally {
+            options.close()
+        }
+    }
+
+    private fun createSessionOptions(config: PicQueryConfig): OrtSession.SessionOptions {
+        return OrtSession.SessionOptions().apply {
+            setIntraOpNumThreads(config.cpuThreads)
+            try {
+                setInterOpNumThreads(1)
+            } catch (_: OrtException) {
+                // Older runtimes may reject this tuning hint.
+            }
+            try {
+                setSymbolicDimensionValue("batch", 1)
+            } catch (_: OrtException) {
+                // Fixed-shape models do not have a symbolic batch dimension.
+            }
+            if (modelFile.extension.equals("ort", ignoreCase = true)) {
+                addConfigEntry("session.load_model_format", "ORT")
+            }
+        }
     }
 }
 

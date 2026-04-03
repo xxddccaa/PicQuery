@@ -1,76 +1,165 @@
 # PicQuery
 
-[中文](README_zh.md)| English
+[中文](README_zh.md) | English
 
 ![cover_en](assets/cover_en.jpg)
 
-🔍 Search for your local images with natural language, running completely offline. For example, "a laptop on the desk", "sunset by the sea", "kitty in the grass", and so on.  
-Search images by picking a photo from your gallery
-- Totally free, NO in-app purchases
-- Support both English and Chinese
-- Indexing and searching of images works completely offline without worrying about privacy
-- Show results in less than 1 second when searching for 8,000+ photos
-- Wait for indexing on the first time you launch, and search immediately afterward
+PicQuery is an offline image search project for Android. It lets you search local photos with natural language such as "a laptop on the desk", "sunset by the sea", or "kitty in the grass".
 
-## Installation
+This repository now contains two deliverables in one project:
 
-<a href='https://play.google.com/store/apps/details?id=me.grey.picquery&pcampaignid=pcampaignidMKT-Other-global-all-co-prtnr-py-PartBadge-Mar2515-1'><img style="width:130px" src='./assets/google-play-badge-en.png'/></a>
+- `picquery-sdk`: an Android AAR that exposes text-to-image search capabilities to other apps
+- `demo-app`: a demo APK that uses the same SDK and can index your local gallery
 
-- Google Play - Search for “PicQuery”
-- Download APK from [Release](https://github.com/greyovo/PicQuery/releases)
-- If you have trouble accessing the above resources, please see [here](README_zh.md##其他方式)
+## Highlights
 
-> 🍎 For iOS users, please refer to _[Queryable](https://apps.apple.com/us/app/queryable-find-photo-by-text/id1661598353)_ ([Code](https://github.com/mazzzystar/Queryable)), the inspiration behind this application, developed by [@mazzzystar](https://github.com/mazzzystar/Queryable).
+- Fully offline image search on device
+- Text-to-image retrieval based on CLIP / MobileCLIP style embeddings
+- SDK and model files are separated
+- Demo app can import or auto-detect external model files
+- Index files are cached locally for faster relaunch
+- Ready to evolve from CPU/ONNX to GPU/TFLite when image models are available
 
-## Implementation
+## Project Layout
 
-> Thanks to [@mazzzystar](https://github.com/mazzzystar) and [@Young-Flash](https://github.com/Young-Flash) for their assistance during the development. The discussion can be viewed [here](https://github.com/mazzzystar/Queryable/issues/12).
+```text
+PicQuery/
+  picquery-sdk/   # Android library (AAR)
+  demo-app/       # Demo APK using the SDK
+  models/         # Optional local model staging directory, not committed
+  assets/         # README / store assets
+```
 
-_PicQuery_ is powered by OpenAI's [CLIP model](https://github.com/openai/CLIP). and Apple's [mobile clip](https://github.com/apple/ml-mobileclip)
+## Current Architecture
 
+### `picquery-sdk`
 
-First, the images to be searched are encoded into vectors using an image encoder and stored in a database. The text provided by the user during the search is also encoded into a vector. The encoded text vector is then compared with the indexed image vectors to calculate the similarity. The top K images with the highest similarity scores are selected as the query results.
+The SDK provides:
 
-## Build & Run Clip
+- `PicQueryEngine`: top-level API for encoding, indexing, and searching
+- `PicQueryIndex`: in-memory vector index
+- `PicQueryIndexStore`: local file persistence for vector indexes
+- `ClipTokenizer`: bundled tokenizer asset (`bpe_vocab_gz`)
 
-To build this project, you need to obtain a quantized CLIP model.
+Runtime support:
 
-Run the scripts in this [jupyter notebook](https://colab.research.google.com/drive/1bW1aMg0er1T4aOcU5pCNYVgmVzBJ4-x4#scrollTo=hPscj2wlZlHb) step by step. When you run into the _"You are done"_ section, you should get the following model files in `./result ` directory:
+- Text encoder: ONNX Runtime (`.onnx` / `.ort`)
+- Image encoder:
+  - `.tflite` -> LiteRT with GPU delegate preferred when available
+  - `.onnx` / `.ort` -> ONNX Runtime
 
-- `clip-image-int8.ort`
-- `clip-text-int8.ort`
-> If you don't want to run the scripts, you may directly download them from [Google Drive](https://drive.google.com/drive/folders/1VHgEvYyKsiVte8-lywD8qS8SfgcvMc3z?usp=drive_link).
+### `demo-app`
 
-## Build & Run mobile-clip
+The demo app provides:
 
-To build this project, you need to obtain a quantized CLIP model.
+- Model import UI
+- Local gallery indexing
+- Text search over indexed local photos
+- Cached gallery index persistence
+- Automatic model path discovery for common app directories
 
+## Model Strategy
 
-- `vision_model.ort`
-- `text_model.ort`
+This project intentionally keeps model files out of the AAR.
 
-> download them from [Google Drive](https://drive.google.com/drive/folders/1HgGDfsHHIlDK_Fx0Spnujxt51SgguNCq?usp=drive_link).
+Why:
 
-Put them into `app\src\main\assets` and you're ready to go.
+- model files are large
+- different apps may want different model variants
+- shipping models separately makes SDK reuse easier
 
-## Choose module
-val AppModules = listOf(viewModelModules, dataModules, modulesCLIP, domainModules) pick the module you want，Clip pair to modulesCLIP module， mobile-clip pair to modulesMobileCLIP module
+### Where models are expected at runtime
+
+For the demo app, the preferred runtime paths are:
+
+- image model:
+  - `/data/user/0/me.grey.picquery.demo/files/models/mobileclip2-s0/mobileclip2_image.onnx`
+  - or `/data/user/0/me.grey.picquery.demo/files/models/mobileclip2-s0/mobileclip2_image.tflite`
+- text model:
+  - `/data/user/0/me.grey.picquery.demo/files/models/mobileclip2-s0/mobileclip2_text.onnx`
+  - or `/data/user/0/me.grey.picquery.demo/files/models/mobileclip2-s0/mobileclip2_text.ort`
+
+The demo can also import models from the system file picker and copy them into its own private directory.
+
+## How To Use The Demo App
+
+1. Install the demo APK
+2. Provide the model files in one of these ways:
+   - import them from the UI
+   - push them into the app private files directory
+3. Grant photo permission
+4. Tap `Build index`
+5. Enter a natural-language query and search
+
+### Demo app storage layout
+
+The demo app stores files here:
+
+- models:
+  - `files/models/mobileclip2-s0/`
+- cached index:
+  - `files/index/gallery-index.bin`
+  - `files/index/gallery-index.tsv`
+
+## Build
+
+Build the AAR and demo APK:
+
+```bash
+./gradlew :picquery-sdk:assembleRelease :demo-app:assembleDebug
+```
+
+Artifacts:
+
+- AAR: `picquery-sdk/build/outputs/aar/picquery-sdk-release.aar`
+- APK: `demo-app/build/outputs/apk/debug/demo-app-debug.apk`
+
+## SDK Integration Example
+
+```kotlin
+val engine = PicQueryEngine(
+    context = context,
+    config = PicQueryConfig(
+        modelPaths = PicQueryModelPaths(
+            imageModelPath = "/data/user/0/your.app/files/models/mobileclip2_image.onnx",
+            textModelPath = "/data/user/0/your.app/files/models/mobileclip2_text.onnx"
+        )
+    )
+)
+
+val index = PicQueryIndex()
+engine.addToIndex(index, "image-1", bitmap)
+val hits = engine.search("sunset beach", index, topK = 10)
+```
+
+## Local Development Notes
+
+- `models/` is a local staging directory for testing and adb workflows
+- large model files should not be committed to the repository
+- if GitHub blocks large files, publish them as Release assets instead
 
 ## FAQ
-### Issue 1
-java.lang.RuntimeException: java.lang.reflect.InvocationTarget Exception
-> Don't forget to add model files to `app\src\main\assets` directory
 
-### Issue 2
-java.io.FileNotFoundException: clip-image-int8.ort
-> Make sure the model files are in the correct directory, if you are using mobile-clip, make sure you are using the correct model files, and change the module to modulesMobileCLIP
+### Why is the app still asking me to import models?
 
-## Acknowledgment
+The app only works after valid image and text model files are available at runtime. If they are not found in the app's private files directory, the demo falls back to asking for manual import.
 
+### Does the current demo use Snapdragon NPU / QNN?
+
+Not yet. The current working path is:
+
+- image: TFLite GPU when a `.tflite` image model exists, otherwise ONNX Runtime
+- text: ONNX Runtime
+
+QNN was investigated, but the current implementation prioritizes a stable deliverable first.
+
+## Acknowledgements
+
+- [apple/ml-mobileclip](https://github.com/apple/ml-mobileclip)
+- [openai/CLIP](https://github.com/openai/CLIP)
 - [mazzzystar/Queryable](https://github.com/mazzzystar/Queryable)
-- [Young-Flash](https://github.com/Young-Flash)
 - [IacobIonut01/Gallery](https://github.com/IacobIonut01/Gallery)
 
 ## License
 
-This project is open-source under an MIT license. All rights reserved.
+This project is open-source under the MIT License.

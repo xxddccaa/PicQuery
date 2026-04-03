@@ -1,0 +1,4 @@
+-keep class ai.onnxruntime.** { *; }
+-keep class org.tensorflow.lite.** { *; }
+-dontwarn ai.onnxruntime.**
+-dontwarn org.tensorflow.lite.**
